@@ -3,7 +3,7 @@
 #
 #   make          # 编译出 mod_catbase.so
 #   make check    # 只把 CatBase 部分编成可执行文件跑一遍（验证模块逻辑 / FFI）
-#   make install  # 安装到 $(MOD_DIR)
+#   make install  # 安装到 $(MOD_DIR)，然后 fs_cli -x "load mod_catbase"
 #   make clean
 #
 # 路径可按需覆盖，例如：
@@ -11,7 +11,7 @@
 #
 # 构建步骤：
 #   1. catbasecc 编译 mod_catbase.cat，生成 Zig 源码 $(CATBASE)/runtime/mod_catbase.zig
-#   2. 生成 $(GEN_DIR)/mod_catbase_abi.zig（C ABI 适配层）
+#   2. 生成 $(GEN_DIR)/mod_catbase_abi.zig（C ABI 适配层，内容见下面的 define）
 #   3. zig 编译 [适配层 + mod_catbase_glue.c] -> mod_catbase.so
 #
 # 第 2 步的由来：catbasecc 0.0.10 生成的入口是 pub fn 而不是 export fn，Zig 不会把
@@ -39,6 +39,35 @@ SO       := $(MOD_NAME).so
 ZIGFLAGS := -dynamic -fPIC -lc -O ReleaseSmall --name $(MOD_NAME)
 FSLIBS   := -L$(FS_LIB) -lfreeswitch
 
+# C ABI 适配层的内容（由 $(file ...) 写到 $(GEN_ABI)）
+define MOD_CATBASE_ABI_ZIG
+// 本文件由 Makefile 生成，请勿手工修改。
+// catbasecc 只生成 pub fn（不是 export fn），C 链接不到 CatBase 编译出来的函数，
+// 所以这里用 export fn 把它们暴露成 C ABI，并把「写一行到 stream」作为 function
+// 参数传给 CatBase（见 mod_catbase.cat: catbase_api）。
+const std = @import("std");
+const cb = @import("mod_catbase.zig");
+
+// 由 mod_catbase_glue.c 实现
+extern fn cb_mod_catbase_write_line(handle: i64, data: [*c]const u8, len: usize) callconv(.C) void;
+
+fn write_line(handle: i64, data: []u8) void {
+    cb_mod_catbase_write_line(handle, data.ptr, data.len);
+}
+
+export fn cb_mod_catbase_load(module_interface: i64, pool: i64) callconv(.C) i64 {
+    return cb.mod_catbase_load(module_interface, pool);
+}
+
+export fn cb_mod_catbase_shutdown() callconv(.C) i64 {
+    return cb.mod_catbase_shutdown();
+}
+
+export fn cb_mod_catbase_api(handle: i64, cmd: [*c]const u8) callconv(.C) i64 {
+    return cb.catbase_api(handle, @constCast(std.mem.span(cmd)), write_line);
+}
+endef
+
 all: $(SO)
 
 # 1. CatBase -> Zig 源码（生成物由编译器放在 $(CATBASE)/runtime/ 下）
@@ -51,20 +80,9 @@ $(GEN_ZIG): $(SRC)
 	rm -rf $(GEN_DIR)/runtime
 	cp -r $(CATBASE)/runtime/runtime $(GEN_DIR)/
 
-# 2. 生成 C ABI 适配层：把 CatBase 的模块入口导出成 C 符号
-$(GEN_ABI): $(GEN_ZIG)
-	printf '%s\n' \
-		'// 本文件由 Makefile 生成，请勿手工修改。' \
-		'// catbasecc 只生成 pub fn，这里用 export fn 把它们暴露成 C ABI。' \
-		'const cb = @import("$(MOD_NAME).zig");' \
-		'' \
-		'export fn cb_$(MOD_NAME)_load(module_interface: i64, pool: i64) callconv(.C) i64 {' \
-		'    return cb.$(MOD_NAME)_load(module_interface, pool);' \
-		'}' \
-		'' \
-		'export fn cb_$(MOD_NAME)_shutdown() callconv(.C) i64 {' \
-		'    return cb.$(MOD_NAME)_shutdown();' \
-		'}' > $(GEN_ABI)
+# 2. 生成 C ABI 适配层
+$(GEN_ABI): $(GEN_ZIG) Makefile
+	$(file >$@,$(MOD_CATBASE_ABI_ZIG))
 
 # 3. 适配层 + C 模块外壳 -> mod_catbase.so
 #    zig 编译 mod_catbase_glue.c 时用 -I$(FS_INC) 找 switch.h，链接时找 libfreeswitch

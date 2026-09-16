@@ -15,10 +15,10 @@
 #       return SWITCH_STATUS_SUCCESS;
 #   }
 #
-# 模块逻辑（load / shutdown + FreeSWITCH 日志）写在本文件里。
+# 模块逻辑（load / shutdown / catbase 命令 + FreeSWITCH 日志）写在本文件里。
 # FreeSWITCH 要的 C ABI 那一层（导出 "<modname>_module_interface" 数据符号、C 调用约定的
-# 入口函数、以及把 switch_loadable_module_create_module_interface() 的结果写回
-# *module_interface）由 mod_catbase_glue.zig 提供，原因见那个文件的说明。
+# 入口函数、注册 catbase 命令、以及把 switch_loadable_module_create_module_interface() 的
+# 结果写回 *module_interface）由 mod_catbase_glue.c 提供，原因见那个文件的说明。
 
 import "/usr/local/freeswitch/lib/libfreeswitch.so" as switch
 
@@ -54,7 +54,7 @@ def mod_log(msg: str) {
 # 这两个参数都是 C 指针，由导出层 mod_catbase_glue.zig 按地址转成 int 传进来：
 #   module_interface -- 导出层已经建好并写回加载器的 switch_loadable_module_interface_t *
 #   pool             -- FreeSWITCH 的内存池
-# 最简模块不注册 app / api / chat，只记一条加载日志。
+# 最简模块不注册 app / chat；catbase 命令的注册在 C 侧的 mod_catbase_glue.c 里。
 def mod_catbase_load(module_interface: int, pool: int) -> int {
     if module_interface != 0 and pool != 0 {
         msg: str = "mod_catbase loaded"
@@ -63,11 +63,25 @@ def mod_catbase_load(module_interface: int, pool: int) -> int {
     return SWITCH_STATUS_SUCCESS
 }
 
-# 对应 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_catbase_shutdown)
+# 对应 C 的 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_catbase_shutdown)
 #   switch_status_t mod_catbase_shutdown(void)
 def mod_catbase_shutdown() -> int {
     msg: str = "mod_catbase unloaded"
     mod_log(msg)
+    return SWITCH_STATUS_SUCCESS
+}
+
+# ------------------------------------------------------------- catbase API
+# 对应 C 的 SWITCH_STANDARD_API(catbase_api)：
+#   switch_status_t catbase_api(const char *cmd, switch_core_session_t *session,
+#                               switch_stream_handle_t *stream)
+# 往 stream 里写字必须走 switch_stream_handle_t::write_function（函数指针），
+# CatBase 自己调不了，所以导出层把「写一行」当作回调传进来，handle 就是 stream 句柄。
+def catbase_api(handle: int, cmd: bytes, write_line: function) -> int {
+    text: str = str(cmd)
+    reply: str = "mod_catbase: " + text
+    line: bytes = bytes(reply)
+    write_line(handle, line)
     return SWITCH_STATUS_SUCCESS
 }
 
