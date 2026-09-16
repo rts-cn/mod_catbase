@@ -2,35 +2,42 @@
 # mod_catbase - 用 CatBase 写的 FreeSWITCH 模块
 #
 #   make          # 编译出 mod_catbase.so
-#   make check    # 只编 CatBase 部分成可执行文件跑一遍（验证 FFI / 模块逻辑）
+#   make check    # 只把 CatBase 部分编成可执行文件跑一遍（验证模块逻辑 / FFI）
 #   make install  # 安装到 $(MOD_DIR)
 #   make clean
 #
 # 路径可按需覆盖，例如：
 #   make CATBASE=/usr/local/catbase FS_ROOT=/usr/local/freeswitch
 #
-# 构建分两步（原因见 mod_catbase_glue.zig 顶部说明）：
+# 构建步骤：
 #   1. catbasecc 编译 mod_catbase.cat，生成 Zig 源码 $(CATBASE)/runtime/mod_catbase.zig
-#   2. zig 编译 mod_catbase_glue.zig（导出 C ABI + 模块接口表）得到 mod_catbase.so
-# catbasecc 0.0.10 的 `-shared` 只生成 pub fn/pub const，Zig 不会把它们放进动态符号表，
-# 产出的 .so 没有模块入口符号、也没有 DT_NEEDED（ldd 显示 statically linked）。
-# 等 catbasecc 支持导出 C 符号后，第 2 步换成 `catbasecc -shared mod_catbase.cat` 即可。
+#   2. 生成 $(GEN_DIR)/mod_catbase_abi.zig（C ABI 适配层）
+#   3. zig 编译 [适配层 + mod_catbase_glue.c] -> mod_catbase.so
+#
+# 第 2 步的由来：catbasecc 0.0.10 生成的入口是 pub fn 而不是 export fn，Zig 不会把
+# pub 声明放进符号表（未被引用的直接丢掉，被引用的符号名也会被 mangle 成
+# "mod_catbase.xxx"），所以 C 链接不到 CatBase 编译出来的函数，需要几行 export fn
+# 做 C ABI 适配。等 catbasecc 支持导出 C 符号后，第 2 步和 mod_catbase_glue.c 里的
+# extern 声明都可以删掉。
 
 CATBASE ?= /usr/src/cb/catbase
 CATCC   ?= $(CATBASE)/bin/catbasecc
 ZIG     ?= /usr/local/zig/zig
 FS_ROOT ?= /usr/local/freeswitch
+FS_INC  ?= $(FS_ROOT)/include/freeswitch
+FS_LIB  ?= $(FS_ROOT)/lib
 MOD_DIR ?= $(FS_ROOT)/mod
 
 MOD_NAME := mod_catbase
 SRC      := $(MOD_NAME).cat
-GLUE     := $(MOD_NAME)_glue.zig
+GLUE_C   := $(MOD_NAME)_glue.c
 GEN_DIR  := gen
 GEN_ZIG  := $(GEN_DIR)/$(MOD_NAME).zig
+GEN_ABI  := $(GEN_DIR)/$(MOD_NAME)_abi.zig
 SO       := $(MOD_NAME).so
 
 ZIGFLAGS := -dynamic -fPIC -lc -O ReleaseSmall --name $(MOD_NAME)
-FSLIBS   := -L$(FS_ROOT)/lib -lfreeswitch
+FSLIBS   := -L$(FS_LIB) -lfreeswitch
 
 all: $(SO)
 
@@ -44,9 +51,25 @@ $(GEN_ZIG): $(SRC)
 	rm -rf $(GEN_DIR)/runtime
 	cp -r $(CATBASE)/runtime/runtime $(GEN_DIR)/
 
-# 2. Zig -> mod_catbase.so（导出层引用生成的代码，符号因此被真正编进动态库）
-$(SO): $(GLUE) $(GEN_ZIG)
-	$(ZIG) build-lib $(GLUE) $(ZIGFLAGS) $(FSLIBS)
+# 2. 生成 C ABI 适配层：把 CatBase 的模块入口导出成 C 符号
+$(GEN_ABI): $(GEN_ZIG)
+	printf '%s\n' \
+		'// 本文件由 Makefile 生成，请勿手工修改。' \
+		'// catbasecc 只生成 pub fn，这里用 export fn 把它们暴露成 C ABI。' \
+		'const cb = @import("$(MOD_NAME).zig");' \
+		'' \
+		'export fn cb_$(MOD_NAME)_load(module_interface: i64, pool: i64) callconv(.C) i64 {' \
+		'    return cb.$(MOD_NAME)_load(module_interface, pool);' \
+		'}' \
+		'' \
+		'export fn cb_$(MOD_NAME)_shutdown() callconv(.C) i64 {' \
+		'    return cb.$(MOD_NAME)_shutdown();' \
+		'}' > $(GEN_ABI)
+
+# 3. 适配层 + C 模块外壳 -> mod_catbase.so
+#    zig 编译 mod_catbase_glue.c 时用 -I$(FS_INC) 找 switch.h，链接时找 libfreeswitch
+$(SO): $(GLUE_C) $(GEN_ABI)
+	$(ZIG) build-lib $(GEN_ABI) -cflags -I$(FS_INC) -- $(GLUE_C) $(ZIGFLAGS) $(FSLIBS)
 	mv -f lib$(MOD_NAME).so $(SO)
 
 check: $(SRC)
