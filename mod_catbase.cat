@@ -1,0 +1,80 @@
+# mod_catbase.cat
+#
+# 最简 FreeSWITCH 模块（CatBase 版）。
+#
+# 对应的 C 版骨架：
+#
+#   SWITCH_MODULE_LOAD_FUNCTION(mod_catbase_load);
+#   SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_catbase_shutdown);
+#   SWITCH_MODULE_DEFINITION(mod_catbase, mod_catbase_load, mod_catbase_shutdown, NULL);
+#
+#   SWITCH_MODULE_LOAD_FUNCTION(mod_catbase_load)
+#   {
+#       *module_interface = switch_loadable_module_create_module_interface(pool, modname);
+#       switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "mod_catbase loaded\n");
+#       return SWITCH_STATUS_SUCCESS;
+#   }
+#
+# 模块逻辑（load / shutdown + FreeSWITCH 日志）写在本文件里。
+# FreeSWITCH 要的 C ABI 那一层（导出 "<modname>_module_interface" 数据符号、C 调用约定的
+# 入口函数、以及把 switch_loadable_module_create_module_interface() 的结果写回
+# *module_interface）由 mod_catbase_glue.zig 提供，原因见那个文件的说明。
+
+import "/usr/local/freeswitch/lib/libfreeswitch.so" as switch
+
+# ---------------------------------------------------------------- 常量
+# 对应 switch_types.h / switch_log.h 中的枚举值
+SWITCH_STATUS_SUCCESS: int = 0
+SWITCH_CHANNEL_ID_LOG: int = 0
+SWITCH_LOG_NOTICE: int = 5
+
+MODULE_NAME: str = "mod_catbase"
+
+# ------------------------------------------------------------ 外部函数声明
+# void switch_log_printf(switch_text_channel_t channel, const char *file,
+#                        const char *func, int line, const char *userdata,
+#                        switch_log_level_t level, const char *fmt, ...)
+from switch import switch_log_printf(channel: int, file_name: str, func_name: str, line: int, userdata: Pointer, level: int, fmt: str) -> None
+
+# ------------------------------------------------------------ 模块内部函数
+# 打一条 FreeSWITCH 日志。
+def mod_log(msg: str) {
+    # 传给 C 函数的 str 必须先落到变量上：直接传字面量时 CatBase 会生成错误的转换代码
+    text: str = msg
+    src_file: str = "mod_catbase.cat"
+    src_func: str = "mod_catbase"
+    no_data: Pointer = pointer()
+    switch.switch_log_printf(SWITCH_CHANNEL_ID_LOG, src_file, src_func, 0, no_data, SWITCH_LOG_NOTICE, text)
+}
+
+# ---------------------------------------------------------------- 模块入口
+# 对应 SWITCH_MODULE_LOAD_FUNCTION(mod_catbase_load)，C 原型：
+#   switch_status_t mod_catbase_load(switch_loadable_module_interface_t **module_interface,
+#                                    switch_memory_pool_t *pool)
+# 这两个参数都是 C 指针，由导出层 mod_catbase_glue.zig 按地址转成 int 传进来：
+#   module_interface -- 导出层已经建好并写回加载器的 switch_loadable_module_interface_t *
+#   pool             -- FreeSWITCH 的内存池
+# 最简模块不注册 app / api / chat，只记一条加载日志。
+def mod_catbase_load(module_interface: int, pool: int) -> int {
+    if module_interface != 0 and pool != 0 {
+        msg: str = "mod_catbase loaded"
+        mod_log(msg)
+    }
+    return SWITCH_STATUS_SUCCESS
+}
+
+# 对应 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_catbase_shutdown)
+#   switch_status_t mod_catbase_shutdown(void)
+def mod_catbase_shutdown() -> int {
+    msg: str = "mod_catbase unloaded"
+    mod_log(msg)
+    return SWITCH_STATUS_SUCCESS
+}
+
+# FreeSWITCH 模块没有 main，但 CatBase 要求程序必须有 main（编译共享库时也要求）。
+# 这里留作独立编译 / 自检：catbasecc -o mod_catbase mod_catbase.cat && ./mod_catbase
+def main(args:list[str]) {
+    rc: int = mod_catbase_load(1, 1)
+    rc = rc + mod_catbase_shutdown()
+    print(MODULE_NAME, ": ok (status ", rc, ")\n")
+}
