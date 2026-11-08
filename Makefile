@@ -14,14 +14,15 @@
 #   2. 生成 $(GEN_DIR)/mod_catbase_abi.zig（C ABI 适配层，内容见下面的 define）
 #   3. zig 编译 [适配层 + mod_catbase_glue.c] -> mod_catbase.so
 #
-# 第 2 步的由来：catbasecc 0.0.10 生成的入口是 pub fn 而不是 export fn，Zig 不会把
+# 第 2 步的由来：catcc（含旧的 catbasecc）生成的入口是 pub fn 而不是 export fn，Zig 不会把
 # pub 声明放进符号表（未被引用的直接丢掉，被引用的符号名也会被 mangle 成
 # "mod_catbase.xxx"），所以 C 链接不到 CatBase 编译出来的函数，需要几行 export fn
-# 做 C ABI 适配。等 catbasecc 支持导出 C 符号后，第 2 步和 mod_catbase_glue.c 里的
+# 做 C ABI 适配。等 catcc 支持导出 C 符号后，第 2 步和 mod_catbase_glue.c 里的
 # extern 声明都可以删掉。
 
-CATBASE ?= /usr/src/cb/catbase
-CATCC   ?= $(CATBASE)/bin/catbasecc
+CATBASE ?= /usr/local/catbase
+# CATCC   ?= $(CATBASE)/bin/catbasecc
+CATCC   ?= $(CATBASE)/bin/catcc
 ZIG     ?= /usr/local/zig/zig
 FS_ROOT ?= /usr/local/freeswitch
 FS_INC  ?= $(FS_ROOT)/include/freeswitch
@@ -42,7 +43,7 @@ FSLIBS   := -L$(FS_LIB) -lfreeswitch
 # C ABI 适配层的内容（由 $(file ...) 写到 $(GEN_ABI)）
 define MOD_CATBASE_ABI_ZIG
 // 本文件由 Makefile 生成，请勿手工修改。
-// catbasecc 只生成 pub fn（不是 export fn），C 链接不到 CatBase 编译出来的函数，
+// catcc 只生成 pub fn（不是 export fn），C 链接不到 CatBase 编译出来的函数，
 // 所以这里用 export fn 把它们暴露成 C ABI，并把「写一行到 stream」作为 function
 // 参数传给 CatBase（见 mod_catbase.cat: catbase_api）。
 const std = @import("std");
@@ -71,8 +72,12 @@ endef
 all: $(SO)
 
 # 1. CatBase -> Zig 源码（生成物由编译器放在 $(CATBASE)/runtime/ 下）
+#    注意：catcc 的 -o 是字面文件名（不像旧版 catbasecc 会自动加 lib 前缀 / .so 后缀），
+#    所以这里必须用一个临时名字，否则会覆盖 `make check` 生成的同名可执行文件 mod_catbase，
+#    把 ./mod_catbase 变成一个空的 .so（运行即 SIGSEGV）。编译产物只用来生成 Zig 源码，用完删掉。
 $(GEN_ZIG): $(SRC)
-	$(CATCC) -shared -o $(MOD_NAME) $(SRC)
+	$(CATCC) -shared -o $(MOD_NAME)_tmp $(SRC)
+	@rm -f $(MOD_NAME)_tmp lib$(MOD_NAME)_tmp.so lib$(MOD_NAME)_tmp.so.o
 	@test -f $(CATBASE)/runtime/$(MOD_NAME).zig || \
 		{ echo "error: 未生成 $(CATBASE)/runtime/$(MOD_NAME).zig，请确认 conf/config.conf 里 keep_zig_files = true"; exit 1; }
 	mkdir -p $(GEN_DIR)
@@ -99,6 +104,7 @@ install: $(SO)
 	install -m 0755 $(SO) $(MOD_DIR)/$(SO)
 
 clean:
-	rm -rf $(GEN_DIR) $(SO) lib$(MOD_NAME).so lib$(MOD_NAME).so.o $(MOD_NAME) $(MOD_NAME).o
+	rm -rf $(GEN_DIR) $(SO) lib$(MOD_NAME).so lib$(MOD_NAME).so.o $(MOD_NAME) $(MOD_NAME).o \
+		$(MOD_NAME)_tmp lib$(MOD_NAME)_tmp.so lib$(MOD_NAME)_tmp.so.o
 
 .PHONY: all check install clean

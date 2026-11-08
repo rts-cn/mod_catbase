@@ -6,10 +6,10 @@
  * 模块接口表 + load/shutdown + 注册 API，然后把控制权交给 CatBase。
  *
  * 关于 gen/mod_catbase_abi.zig（由 Makefile 生成的那几行 Zig）：
- *   catbasecc 0.0.10 生成的入口都是 pub fn 而不是 export fn，Zig 不会把 pub 声明导出成
+ *   catcc 生成的入口都是 pub fn 而不是 export fn，Zig 不会把 pub 声明导出成
  *   C 符号（没被引用的还会被整个丢掉，即使被引用，符号名也会被 mangle 成
  *   "mod_catbase.xxx"），所以 C 无法直接链接到 CatBase 编译出来的函数。
- *   等 catbasecc 能导出 C 符号后，那个适配文件和下面的 extern 声明都可以删掉。
+ *   等 catcc 能导出 C 符号后，那个适配文件和下面的 extern 声明都可以删掉。
  */
 
 #include <switch.h>
