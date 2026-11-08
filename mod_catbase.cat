@@ -57,7 +57,7 @@ def mod_log(msg: str) {
 # 最简模块不注册 app / chat；catbase 命令的注册在 C 侧的 mod_catbase_glue.c 里。
 def mod_catbase_load(module_interface: int, pool: int) -> int {
     if module_interface != 0 and pool != 0 {
-        msg: str = "mod_catbase loaded"
+        msg: str = "mod_catbase loaded\n"
         mod_log(msg)
     }
     return SWITCH_STATUS_SUCCESS
